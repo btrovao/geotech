@@ -1,0 +1,67 @@
+-- public.mv_mapbiomas2021_set_sens_21 source
+
+CREATE MATERIALIZED VIEW public.mv_mapbiomas2021_set_sens_21
+TABLESPACE pg_default
+AS SELECT row_number() OVER () AS row_number,
+    w.cd_mun,
+    w.cd_setor,
+    w.val,
+    w.id_mapbiomas,
+    sum(st_area(st_transform(w.geom, 5880)) / 10000::double precision) AS classe_ha
+   FROM ( SELECT a.cd_mun,
+            a.cd_setor,
+            b.id AS id_mapbiomas,
+            b.val,
+                CASE
+                    WHEN st_coveredby(b.geom, a.geom) THEN b.geom
+                    ELSE st_multi(st_collectionextract(st_intersection(b.geom, a.geom), 3))
+                END AS geom
+           FROM ibge.tb_setore_censo_2021 a
+             JOIN mapbiomas.tb_brasil_coverage_2021 b ON st_intersects(a.geom, b.geom)
+          WHERE a.cd_mun::text = '3550308'::text
+          GROUP BY a.cd_mun, a.cd_setor, a.geom, b.geom, b.val, b.id) w
+     JOIN mapbiomas.tb_brasil_coverage_2021 t_1 ON t_1.id = w.id_mapbiomas
+  GROUP BY w.cd_mun, w.cd_setor, w.val, w.id_mapbiomas
+WITH DATA;
+
+
+-- public.mv_mapbiomas2021_set_sens_21_cons source
+
+CREATE MATERIALIZED VIEW public.mv_mapbiomas2021_set_sens_21_cons
+TABLESPACE pg_default
+AS SELECT x.cd_mun,
+    x.cd_setor,
+    d.classes,
+    sum(x.classe_ha) AS classe_ha
+   FROM mv_mapbiomas2021_set_sens_21 x
+     JOIN mapbiomas.tb_leg_mapbiomas d ON x.val::integer = d.val
+  GROUP BY x.cd_mun, x.cd_setor, x.classe_ha, d.classes
+WITH DATA;
+
+
+--RESULTADO FINAL setores_sp_flor_21
+
+SELECT row_number() over(),
+ b.*, 
+sum(coalesce(classe_ha, 0)) as flor_ha,
+st_area(st_transform(b.geom, 5880))/10000 as setor_ha,
+sum(coalesce(classe_ha, 0))/(st_area(st_transform(b.geom, 5880))/10000) as flor_div_mun
+FROM public.mv_mapbiomas2021_set_sens_21_cons a 
+right join ibge.tb_setore_censo_2021 b on a.cd_setor = b.cd_setor and a.classes = 'Formação Florestal' 
+where b.cd_mun = '3550308' 
+group by b.id,
+geom,
+b.cd_setor,
+cd_sit,
+nm_sit,
+cd_uf,
+nm_uf,
+sigla_uf,
+b.cd_mun,
+nm_mun,
+cd_dist,
+nm_dist,
+cd_subdist,
+nm_subdist
+
+
