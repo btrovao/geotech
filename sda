@@ -1,4 +1,117 @@
-## CALCULO DE ROTAS ASSENTAMENTOS ATÉ O NÓ PAVIMENTADO MAIS PROXIMO
+## CALCULO DE ROTAS ASSENTAMENTOS ATÉ O NÓ PAVIMENTADO MAIS PROXIMO V2
+
+-- Crie a tabela para armazenar os resultados finais das rotas se ela ainda não existir
+CREATE TABLE IF NOT EXISTS public.resultados_rotas_final_teste (
+    poligono_id integer,
+    route_km numeric,
+    route_geom geometry
+);
+
+-- Procedimento para calcular e verificar a rota
+DO $$
+DECLARE
+    r_id integer;
+    orig_vertex integer;
+    dest_vertex integer;
+    v_prop record;
+BEGIN
+    FOR r_id IN SELECT id FROM public.mv_pa_500_paved_roads_final LOOP
+
+        -- Encontre o vértice de origem mais próximo
+        SELECT id INTO orig_vertex FROM novaims.roads_surface_es_noded_vertices_pgr
+        ORDER BY the_geom <-> (SELECT ST_Centroid(st_transform(geom, 4326)) FROM public.mv_pa_500_paved_roads_final WHERE id = r_id)
+        LIMIT 1;
+
+        -- Encontre o vértice de destino mais próximo (este será um placeholder, pois a rota pode ser truncada mais tarde)
+        SELECT id INTO dest_vertex FROM (select
+						    v.id,
+						    a.surface,
+						    a.fclass, v.the_geom
+						FROM
+						    novaims.roads_surface_es_noded_vertices_pgr v
+						JOIN
+						    novaims.roads_surface_es_noded c ON v.id = c.source
+						JOIN
+						    novaims.roads_surface_es a ON c.old_id = a.id
+						    where  surface IN ('asphalt', 'paved', 'pavimentado', 'concrete') 
+                   					 AND fclass IN ('primary', 'secondary', 'trunk')
+						GROUP BY
+						    v.id, a.surface, a.fclass, v.the_geom) a        
+        ORDER BY the_geom <-> (SELECT ST_Centroid(st_transform(geom, 4326)) 
+        						FROM public.mv_pa_500_paved_roads_final WHERE id = r_id)
+         LIMIT 1;
+
+        -- Calcula a rota completa
+        WITH Rotas AS (
+            SELECT * FROM pgr_bddijkstra(
+                'SELECT id, source, target, ST_Length(the_geom) as cost FROM novaims.roads_surface_es_noded',
+                orig_vertex,
+                dest_vertex,
+                directed := false
+            )
+        ),
+        Rotas_Com_Verts AS (
+						            SELECT 
+						                r.*,
+						                vp.surface,
+						                vp.fclass
+						            FROM 
+						                Rotas r
+						            LEFT JOIN 
+						               (SELECT
+						    v.id,
+						    a.surface,
+						    a.fclass
+						FROM
+						    novaims.roads_surface_es_noded_vertices_pgr v
+						JOIN
+						    novaims.roads_surface_es_noded c ON v.id = c.source
+						JOIN
+						    novaims.roads_surface_es a ON c.old_id = a.id
+						GROUP BY
+						    v.id, a.surface, a.fclass) vp ON r.node = vp.id
+        ),
+        Rotas_Truncadas AS (
+            SELECT
+                *,
+                row_number() OVER (ORDER BY seq) as rn,
+                count(*) OVER () as full_route_count
+            FROM
+                Rotas_Com_Verts
+        ),
+        Rotas_Final AS (
+            SELECT 
+                *
+            FROM 
+                Rotas_Truncadas r
+            WHERE
+                r.rn <= ALL (
+                    SELECT rn
+                    FROM Rotas_Truncadas
+                    WHERE surface IN ('asphalt', 'paved', 'pavimentado', 'concrete') 
+                    AND fclass IN ('primary', 'secondary', 'trunk')
+                )
+            OR full_route_count = r.rn -- Caso não exista nenhum vértice pavimentado ao longo da rota
+        )
+        INSERT INTO public.resultados_rotas_final_teste(poligono_id, route_km, route_geom)
+        SELECT 
+            r_id,
+            SUM(ST_Length(n.the_geom::geography)) / 1000 AS route_km,
+            ST_Collect(n.the_geom) AS route_geom
+        FROM 
+            Rotas_Final rf
+        JOIN 
+            novaims.roads_surface_es_noded n ON rf.edge = n.id
+        GROUP BY 
+            r_id;
+
+    END LOOP;
+END $$;
+
+
+
+
+## CALCULO DE ROTAS ASSENTAMENTOS ATÉ O NÓ PAVIMENTADO MAIS PROXIMO V1
 
 -- Primeiro, certifique-se de que a tabela de destino existe
 CREATE TABLE IF NOT EXISTS public.resultados_rotas_final (
